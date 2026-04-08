@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "codestats"
+version = "0.1.0"
+description = "Code intelligence CLI -- dead code detection, blast radius analysis, dependency tracing, and architecture diagrams. Built by ClaudeFast (claudefa.st)."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [
+    { name = "Abdo El-Mobayad" },
+]
+keywords = ["code-analysis", "dead-code", "dependency-graph", "architecture", "cli"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Quality Assurance",
+]
+dependencies = [
+    "click>=8.0",
+    "networkx>=3.0",
+    "tree-sitter>=0.22",
+    "tree-sitter-python",
+    "tree-sitter-javascript",
+    "tree-sitter-typescript",
+    "tree-sitter-go",
+    "tree-sitter-rust",
+    "tree-sitter-java",
+    "tree-sitter-cpp",
+    "pathspec>=0.11",
+    "gitpython>=3.1",
+]
+
+[project.scripts]
+codestats = "codestats.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/Abdo-El-Mobayad/codestats"
+Repository = "https://github.com/Abdo-El-Mobayad/codestats"
+
+[tool.setuptools.packages.find]
+include = ["codestats*"]
+
+[tool.setuptools.package-data]
+codestats = ["queries/*.scm"]
