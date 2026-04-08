@@ -4,9 +4,70 @@ Code intelligence CLI -- dead code detection, blast radius analysis, dependency 
 
 Built by [ClaudeFast](https://claudefa.st). Graph engine extracted and adapted from [Repowise](https://github.com/repowise-dev/repowise).
 
+## Why CodeStats Exists
+
+[Repowise](https://github.com/repowise-dev/repowise) is a powerful codebase intelligence platform with 8 MCP tools, LLM-generated documentation, a web dashboard, decision tracking, and team analytics. But after evaluating it on a real Next.js codebase, we found that:
+
+- **94 pip dependencies** for features most solo developers and small teams never use
+- **5 of 8 tools require LLM API calls** (and costs) to function at all
+- **The MCP server has a packaging bug** that prevents it from starting (v0.2.0)
+- **57% of import edges were broken** because TypeScript `@/` path aliases weren't resolved
+- **Dead code detection had a 100% false positive rate** -- flagging core infrastructure files (51 importers) as dead
+- **Team-oriented features** (bus factor, ownership analysis, onboarding wiki) provide zero value for single developers
+
+The graph engine underneath, however, is excellent. Tree-sitter parsing, NetworkX dependency graphs, and git history analytics are exactly the right tools for code intelligence. They just need to work correctly and ship without the overhead.
+
+### What We Stripped Out
+
+| Removed                | Why                                                                                    |
+| ---------------------- | -------------------------------------------------------------------------------------- |
+| LLM wiki generation    | Requires API keys and costs. Hand-crafted docs are better for projects that have them. |
+| MCP server             | Broken in v0.2.0 (missing `repowise.server.services` module). CLI is more portable.    |
+| Web dashboard          | Heavy dependency for a visualization you can get from Mermaid output.                  |
+| Decision tracking      | Useful for teams, not for solo developers who are the decision-maker.                  |
+| Semantic search        | Requires LLM-generated embeddings. `grep` and IDE search are faster.                   |
+| Vector store (LanceDB) | Only needed for semantic search.                                                       |
+| SQLAlchemy ORM         | Replaced with stdlib `sqlite3`. 50KB database instead of an ORM layer.                 |
+| structlog              | Replaced with stdlib `logging`.                                                        |
+| Cost tracking          | No LLM calls, no costs to track.                                                       |
+| Team analytics         | Bus factor is always 1 for solo projects. Ownership is always you.                     |
+
+### What We Fixed
+
+| Fix                                         | Impact                                                                                                                                                         |
+| ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **TypeScript `@/` path alias resolution**   | Reads `tsconfig.json` paths and resolves aliases before falling back to external classification. Internal edges went from 110 to 1,047 (9.5x improvement).     |
+| **Next.js framework entry point detection** | `app/**/page.tsx`, `route.ts`, `layout.tsx`, `middleware.ts`, and 12 other patterns are auto-excluded from dead code detection. Eliminated 55 false positives. |
+| **`.claude/` directory exclusion**          | Claude Code hooks and skills are invoked by the framework, not via imports. Excluded from traversal entirely.                                                  |
+| **Global storage**                          | Data lives at `~/.codestats/projects/` instead of cluttering project directories. Nothing added to `.gitignore`.                                               |
+
+### What We Kept
+
+| Kept                          | Why                                                                       |
+| ----------------------------- | ------------------------------------------------------------------------- |
+| **Tree-sitter parsing**       | Fast, accurate import/symbol extraction across 10 languages.              |
+| **NetworkX dependency graph** | PageRank, betweenness centrality, BFS path finding -- all work correctly. |
+| **Git history analytics**     | Hotspot scoring, churn detection, co-change partners, temporal decay.     |
+| **Dead code analyzer**        | Graph-traversal based, no LLM calls, under 1 second.                      |
+| **`.scm` query files**        | Language-specific tree-sitter queries for all 10 supported languages.     |
+
+### The Result
+
+| Metric                          | Repowise                  | CodeStats                |
+| ------------------------------- | ------------------------- | ------------------------ |
+| Dependencies                    | 94                        | 12                       |
+| Install size                    | ~200MB                    | ~40MB                    |
+| Requires LLM API key            | Yes (5/8 tools)           | No                       |
+| MCP server required             | Yes (broken)              | No (CLI only)            |
+| Internal edge accuracy          | 6.3% (broken `@/`)        | 63.5% (fixed)            |
+| Dead code false positives       | 100% on app files         | 0% on app files          |
+| Framework entry point detection | No                        | Yes (Next.js + 5 others) |
+| Storage location                | In project (`.repowise/`) | Global (`~/.codestats/`) |
+| Index time (400 files)          | ~2 min                    | ~3 min                   |
+
 ## What It Does
 
-CodeStats indexes your codebase using tree-sitter parsing and git history, then stores a dependency graph in a local SQLite database. From that graph, it can answer four questions:
+CodeStats indexes your codebase using tree-sitter parsing and git history, then stores a dependency graph in a local SQLite database. From that graph, it answers four questions:
 
 1. **Dead code** -- Which files are never imported by anything? (With framework-aware filtering so Next.js pages, routes, and layouts are not flagged.)
 2. **Blast radius** -- How many files depend on a given file? What breaks if you change it?
