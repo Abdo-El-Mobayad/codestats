@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import posixpath
 from pathlib import Path
 from typing import Any
 
@@ -296,29 +297,34 @@ class GraphBuilder:
         if language in ("typescript", "javascript"):
             if module_path.startswith("."):
                 base = importer_dir / module_path
-                for ext in (".ts", ".tsx", ".js", ".jsx", "/index.ts", "/index.js"):
-                    candidate = Path(str(base) + ext).as_posix()
+                # Normalize to resolve .. segments (critical for ../foo imports)
+                base_posix = posixpath.normpath(base.as_posix())
+                # Try direct file with extensions
+                for ext in (".ts", ".tsx", ".js", ".jsx"):
+                    candidate = base_posix + ext
                     if candidate in path_set:
                         return candidate
-                    candidate = (
-                        base.with_suffix(ext).as_posix()
-                        if not ext.startswith("/")
-                        else (base / "index.ts").as_posix()
-                    )
+                # Try index files in directory
+                for index in ("/index.ts", "/index.tsx", "/index.js", "/index.jsx"):
+                    candidate = base_posix + index
                     if candidate in path_set:
                         return candidate
+                # Try exact match (extensionless or already has extension)
+                if base_posix in path_set:
+                    return base_posix
+                return None  # Relative import that can't resolve -- don't create external node
             else:
                 # Try tsconfig/jsconfig path alias resolution
                 alias_resolved = self._resolve_ts_alias(module_path, path_set)
                 if alias_resolved:
                     return alias_resolved
-            # External npm package
-            external_key = f"external:{module_path}"
-            if external_key not in self._graph.nodes:
-                self._graph.add_node(
-                    external_key, language="external", symbol_count=0, has_error=False
-                )
-            return external_key
+                # External npm package
+                external_key = f"external:{module_path}"
+                if external_key not in self._graph.nodes:
+                    self._graph.add_node(
+                        external_key, language="external", symbol_count=0, has_error=False
+                    )
+                return external_key
 
         # --- Go ---
         if language == "go":

@@ -13,7 +13,7 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 log = logging.getLogger(__name__)
@@ -86,6 +86,20 @@ _NEVER_FLAG_PATTERNS = (
     "**/app/**/twitter-image.tsx",
     "**/app/**/sitemap.ts",
     "**/app/**/robots.ts",
+    # Config files consumed by external tools
+    "*.config.ts", "*.config.js", "*.config.cjs", "*.config.mjs",
+    "content-collections.ts", "content-collections.js",
+    "*-sitemap.config.*",
+    "*biome.json*",
+    "*.eslintrc*",
+    "*.prettierrc*",
+    "*babel.config.*",
+    "*tsconfig*.json",
+    "*jsconfig*.json",
+    # Script directories (run manually, never imported)
+    "scripts/*",
+    "bin/*",
+    "tools/*",
 )
 
 # Default dynamic patterns (plugins, handlers, etc.)
@@ -230,7 +244,22 @@ class DeadCodeAnalyzer:
         if len(packages) < 2:
             return findings
 
+        # Only consider directories that look like actual packages
+        # (contain package.json or __init__.py -- real monorepo packages)
+        package_indicators = {"package.json", "__init__.py"}
+        valid_packages = {}
         for pkg, files in packages.items():
+            has_indicator = any(
+                Path(f).name in package_indicators and len(Path(f).parts) == 2
+                for f in files
+            )
+            if has_indicator:
+                valid_packages[pkg] = files
+
+        if len(valid_packages) < 2:
+            return findings
+
+        for pkg, files in valid_packages.items():
             if pkg in whitelist:
                 continue
 
@@ -273,10 +302,11 @@ class DeadCodeAnalyzer:
     def _should_never_flag(self, path: str, whitelist: set[str]) -> bool:
         if path in whitelist:
             return True
+        posix_path = PurePosixPath(path)
         for pattern in _NEVER_FLAG_PATTERNS:
-            if fnmatch.fnmatch(path, pattern):
+            if posix_path.match(pattern):
                 return True
-        return Path(path).name == "__init__.py"
+        return posix_path.name == "__init__.py"
 
     def _matches_dynamic_patterns(self, path: str, patterns: tuple[str, ...]) -> bool:
         name = Path(path).stem

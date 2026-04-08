@@ -79,6 +79,23 @@ def init_db(db_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_path))
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(_SCHEMA)
+
+    # Migrate dead_code table if missing new columns
+    try:
+        cursor = conn.execute("PRAGMA table_info(dead_code)")
+        existing_cols = {row[1] for row in cursor.fetchall()}
+        for col, col_type in [
+            ("last_commit_at", "TEXT"),
+            ("commit_count_90d", "INTEGER"),
+            ("primary_owner", "TEXT"),
+            ("age_days", "INTEGER"),
+        ]:
+            if col not in existing_cols:
+                conn.execute(f"ALTER TABLE dead_code ADD COLUMN {col} {col_type}")
+        conn.commit()
+    except Exception as exc:
+        log.debug("Dead code migration check: %s", exc)
+
     return conn
 
 
@@ -126,6 +143,10 @@ CREATE TABLE IF NOT EXISTS dead_code (
     reason TEXT,
     safe_to_delete BOOLEAN,
     importers INTEGER,
+    last_commit_at TEXT,
+    commit_count_90d INTEGER,
+    primary_owner TEXT,
+    age_days INTEGER,
     PRIMARY KEY (file_path, kind)
 );
 """
@@ -217,6 +238,12 @@ def persist_dead_code(conn: sqlite3.Connection, findings: list) -> None:
 
     rows = []
     for f in findings:
+        last_commit = f.last_commit_at
+        if isinstance(last_commit, datetime):
+            last_commit_str = last_commit.isoformat()
+        else:
+            last_commit_str = str(last_commit) if last_commit else None
+
         rows.append((
             f.file_path,
             f.kind,
@@ -224,10 +251,14 @@ def persist_dead_code(conn: sqlite3.Connection, findings: list) -> None:
             f.reason,
             bool(f.safe_to_delete),
             f.importers,
+            last_commit_str,
+            f.commit_count_90d,
+            f.primary_owner,
+            f.age_days,
         ))
 
     conn.executemany(
-        "INSERT OR REPLACE INTO dead_code VALUES (?,?,?,?,?,?)",
+        "INSERT OR REPLACE INTO dead_code VALUES (?,?,?,?,?,?,?,?,?,?)",
         rows,
     )
     conn.commit()
