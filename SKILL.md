@@ -13,16 +13,18 @@ codestats --version
 If the command is not found, install it:
 
 ```bash
-pip install codestats
+pip install cf-codestats
 ```
 
-Or install from source before PyPI availability:
+Or install from source:
 
 ```bash
 pip install git+https://github.com/Abdo-El-Mobayad/codestats.git
 ```
 
 Requires Python 3.10+ and git available on PATH.
+
+> **Note:** The PyPI package is `cf-codestats` (not `codestats`, which is an unrelated package). The CLI command is still `codestats`.
 
 ## What CodeStats Does
 
@@ -77,9 +79,12 @@ codestats init /path/to/project
 
 # Verbose mode (shows per-file progress)
 codestats init --verbose
+
+# Monorepo: point to a specific tsconfig for alias resolution
+codestats init --tsconfig apps/web/tsconfig.json
 ```
 
-**What it does:** Traverses files (respecting .gitignore), parses each with tree-sitter to extract imports and symbols, builds a NetworkX dependency graph, mines git history for churn and hotspots, runs dead code detection, and saves everything to `~/.codestats/projects/<repo>/graph.db`.
+**What it does:** Traverses files (respecting .gitignore), parses each with tree-sitter to extract imports and symbols (including `import`, `require()`, dynamic `import()`, and `export ... from` re-exports), auto-discovers all `tsconfig.json` files for path alias resolution (monorepo-aware, follows `extends` chains, handles JSONC comments), builds a NetworkX dependency graph, mines git history for churn and hotspots, runs dead code detection, and saves everything to `~/.codestats/projects/<repo>/graph.db`.
 
 **Typical timing:** ~3 minutes for a 400-file codebase. The majority of time is spent on git log analysis.
 
@@ -370,3 +375,7 @@ Database size is typically small (under 1 MB for a 400-file project).
 **Slow indexing:** The git analytics step is the slowest part, as it runs `git log` per file. On a 400-file codebase, expect about 3 minutes total. Larger codebases will take proportionally longer.
 
 **Missing language support:** CodeStats supports TypeScript, JavaScript, Python, Go, Rust, Java, C, C++, Kotlin, and Ruby. Files in other languages are traversed but not parsed for imports.
+
+**Monorepo path aliases not resolving:** CodeStats v0.3.0+ auto-discovers all `tsconfig.json` files in the repo. If aliases still fail, use `--tsconfig` to point to the specific config: `codestats init --tsconfig apps/web/tsconfig.json`. The config's `extends` chain is followed automatically.
+
+**Wrong file resolved for common names:** When multiple files share the same name (e.g., two `helpers.ts`), CodeStats picks the one closest in the directory tree to the importing file. If resolution is wrong, check that the correct tsconfig paths are configured.
