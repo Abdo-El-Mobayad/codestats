@@ -58,6 +58,26 @@ class GraphBuilder:
         self._tsconfig_map: dict[str, list[tuple[str, str]]] | None = None
 
     # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _best_stem_match(candidates: list[str], importer_path: str) -> str:
+        """Pick the candidate whose path shares the longest common prefix with *importer_path*."""
+        if len(candidates) == 1:
+            return candidates[0]
+        importer_parts = Path(importer_path).parts
+        best: str = candidates[0]
+        best_score: int = 0
+        for c in candidates:
+            c_parts = Path(c).parts
+            score = sum(1 for a, b in zip(importer_parts, c_parts) if a == b)
+            if score > best_score:
+                best_score = score
+                best = c
+        return best
+
+    # ------------------------------------------------------------------
     # Building
     # ------------------------------------------------------------------
 
@@ -80,10 +100,10 @@ class GraphBuilder:
         self._graph.remove_edges_from(list(self._graph.edges()))
 
         path_set = set(self._parsed_files.keys())
-        stem_map: dict[str, str] = {}
+        stem_map: dict[str, list[str]] = {}
         for p in path_set:
             stem = Path(p).stem.lower()
-            stem_map[stem] = p
+            stem_map.setdefault(stem, []).append(p)
 
         for path, parsed in self._parsed_files.items():
             for imp in parsed.imports:
@@ -385,7 +405,7 @@ class GraphBuilder:
         module_path: str,
         importer_path: str,
         path_set: set[str],
-        stem_map: dict[str, str],
+        stem_map: dict[str, list[str]],
         language: str,
     ) -> str | None:
         """Best-effort resolve of an import to a known file path."""
@@ -419,7 +439,8 @@ class GraphBuilder:
                 if c in path_set:
                     return c
             stem = module_path.split(".")[-1].lower()
-            return stem_map.get(stem)
+            candidates = stem_map.get(stem)
+            return self._best_stem_match(candidates, importer_path) if candidates else None
 
         # --- TypeScript / JavaScript ---
         if language in ("typescript", "javascript"):
@@ -457,7 +478,8 @@ class GraphBuilder:
         # --- Go ---
         if language == "go":
             stem = module_path.rsplit("/", 1)[-1].lower()
-            return stem_map.get(stem)
+            candidates = stem_map.get(stem)
+            return self._best_stem_match(candidates, importer_path) if candidates else None
 
         # --- C / C++ ---
         if language in ("cpp", "c"):
@@ -471,8 +493,10 @@ class GraphBuilder:
                 except ValueError:
                     pass
             stem = Path(module_path).stem.lower()
-            return stem_map.get(stem)
+            candidates = stem_map.get(stem)
+            return self._best_stem_match(candidates, importer_path) if candidates else None
 
         # --- Generic fallback: stem matching ---
         stem = Path(module_path).stem.lower()
-        return stem_map.get(stem)
+        candidates = stem_map.get(stem)
+        return self._best_stem_match(candidates, importer_path) if candidates else None

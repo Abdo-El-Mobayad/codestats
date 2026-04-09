@@ -497,19 +497,44 @@ class ASTParser:
         seen_raws: set[str] = set()
 
         for capture_dict in _run_query(query, tree.root_node):
+            # Standard import statements
             stmt_nodes = capture_dict.get("import.statement", [])
             module_nodes = capture_dict.get("import.module", [])
 
-            if not stmt_nodes or not module_nodes:
+            # require() calls
+            require_stmt_nodes = capture_dict.get("require.statement", [])
+            require_module_nodes = capture_dict.get("require.module", [])
+
+            # Dynamic import() calls
+            dynamic_stmt_nodes = capture_dict.get("dynamic_import.statement", [])
+            dynamic_module_nodes = capture_dict.get("dynamic_import.module", [])
+
+            # Re-export statements
+            reexport_stmt_nodes = capture_dict.get("reexport.statement", [])
+            reexport_module_nodes = capture_dict.get("reexport.module", [])
+
+            # Determine which capture type matched
+            if stmt_nodes and module_nodes:
+                stmt_node = stmt_nodes[0]
+                mod_node = module_nodes[0]
+            elif require_stmt_nodes and require_module_nodes:
+                stmt_node = require_stmt_nodes[0]
+                mod_node = require_module_nodes[0]
+            elif dynamic_stmt_nodes and dynamic_module_nodes:
+                stmt_node = dynamic_stmt_nodes[0]
+                mod_node = dynamic_module_nodes[0]
+            elif reexport_stmt_nodes and reexport_module_nodes:
+                stmt_node = reexport_stmt_nodes[0]
+                mod_node = reexport_module_nodes[0]
+            else:
                 continue
 
-            stmt_node = stmt_nodes[0]
             raw = _node_text(stmt_node, src).strip()
             if raw in seen_raws:
                 continue
             seen_raws.add(raw)
 
-            module_text = _node_text(module_nodes[0], src).strip().strip("\"'` ")
+            module_text = _node_text(mod_node, src).strip().strip("\"'` ")
             if not module_text:
                 continue
 

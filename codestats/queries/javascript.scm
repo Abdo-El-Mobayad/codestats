@@ -44,3 +44,21 @@
 (import_statement
   source: (string) @import.module
 ) @import.statement
+
+; require('./foo')
+(call_expression
+  function: (identifier) @_fn
+  arguments: (arguments (string) @require.module)
+  (#eq? @_fn "require")
+) @require.statement
+
+; import('./foo')
+(call_expression
+  function: (import) @_imp
+  arguments: (arguments (string) @dynamic_import.module)
+) @dynamic_import.statement
+
+; export { X } from './foo'
+(export_statement
+  source: (string) @reexport.module
+) @reexport.statement
