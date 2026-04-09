@@ -88,7 +88,9 @@ def main() -> None:
 @main.command()
 @click.argument("path", required=False)
 @click.option("--verbose", "-v", is_flag=True, help="Show detailed progress.")
-def init(path: str | None, verbose: bool) -> None:
+@click.option("--tsconfig", "tsconfig_path", type=click.Path(), default=None,
+              help="Path to tsconfig.json for alias resolution (auto-discovered if omitted).")
+def init(path: str | None, verbose: bool, tsconfig_path: str | None) -> None:
     """Index the project: traverse, parse, build graph, analyze."""
     if verbose:
         logging.getLogger("codestats").setLevel(logging.INFO)
@@ -130,7 +132,20 @@ def init(path: str | None, verbose: bool) -> None:
     click.echo("  [3/5] Building dependency graph...")
     from .graph import GraphBuilder
 
-    builder = GraphBuilder(repo_path=repo_path)
+    # Resolve tsconfig path relative to repo root if provided
+    tsconfig_rel = None
+    if tsconfig_path:
+        tsconfig_abs = Path(tsconfig_path).resolve()
+        if not tsconfig_abs.exists():
+            click.echo(f"Error: tsconfig not found: {tsconfig_path}", err=True)
+            sys.exit(1)
+        try:
+            tsconfig_rel = str(tsconfig_abs.relative_to(repo_path.resolve()))
+        except ValueError:
+            click.echo(f"Error: tsconfig must be inside the repository: {tsconfig_path}", err=True)
+            sys.exit(1)
+
+    builder = GraphBuilder(repo_path=repo_path, tsconfig_path=tsconfig_rel)
     for parsed in parsed_files:
         builder.add_file(parsed)
     graph = builder.build()

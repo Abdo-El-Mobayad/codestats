@@ -2,8 +2,9 @@
 
 Extracted and adapted from Repowise (https://github.com/repowise-dev/repowise).
 
-Constructs a directed graph from ParsedFile objects. The tsconfig @/ path alias
-fix is baked in (not patched). Simplified: no co-change edges, no framework
+Constructs a directed graph from ParsedFile objects. Monorepo-aware tsconfig
+path alias resolution: auto-discovers all tsconfig.json files, follows extends
+chains, handles JSONC comments. Simplified: no co-change edges, no framework
 edges, no compile_commands support.
 
 Node types:
@@ -19,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import posixpath
+import re
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +31,10 @@ from .models import ParsedFile
 log = logging.getLogger(__name__)
 
 _LARGE_REPO_THRESHOLD = 30_000
+_SKIP_DIRS = frozenset({
+    "node_modules", "dist", "build", ".next", ".nuxt", ".output",
+    "__pycache__", ".git", ".codestats", ".turbo", ".vercel",
+})
 
 
 class GraphBuilder:
@@ -43,12 +49,13 @@ class GraphBuilder:
         pr = builder.pagerank()
     """
 
-    def __init__(self, repo_path: Path | str | None = None) -> None:
+    def __init__(self, repo_path: Path | str | None = None, tsconfig_path: str | None = None) -> None:
         self._graph: nx.DiGraph = nx.DiGraph()
         self._parsed_files: dict[str, ParsedFile] = {}
         self._built = False
         self._repo_path: Path | None = Path(repo_path) if repo_path else None
-        self._tsconfig_aliases: list[tuple[str, str]] | None = None
+        self._tsconfig_override: str | None = tsconfig_path
+        self._tsconfig_map: dict[str, list[tuple[str, str]]] | None = None
 
     # ------------------------------------------------------------------
     # Building
@@ -165,71 +172,192 @@ class GraphBuilder:
         return nx.node_link_data(self.graph())
 
     # ------------------------------------------------------------------
-    # tsconfig path alias resolution (BAKED IN)
+    # tsconfig path alias resolution (monorepo-aware)
     # ------------------------------------------------------------------
 
-    def _load_tsconfig_aliases(self) -> list[tuple[str, str]]:
-        """Load path aliases from tsconfig.json / jsconfig.json.
+    @staticmethod
+    def _strip_jsonc_comments(text: str) -> str:
+        """Strip // and /* */ comments from JSONC text, preserving strings."""
+        result: list[str] = []
+        i = 0
+        in_string = False
+        n = len(text)
+        while i < n:
+            c = text[i]
+            if in_string:
+                result.append(c)
+                if c == "\\" and i + 1 < n:
+                    i += 1
+                    result.append(text[i])
+                elif c == '"':
+                    in_string = False
+                i += 1
+            elif c == '"':
+                in_string = True
+                result.append(c)
+                i += 1
+            elif c == "/" and i + 1 < n and text[i + 1] == "/":
+                while i < n and text[i] != "\n":
+                    i += 1
+            elif c == "/" and i + 1 < n and text[i + 1] == "*":
+                i += 2
+                while i + 1 < n and not (text[i] == "*" and text[i + 1] == "/"):
+                    i += 1
+                i += 2
+            else:
+                result.append(c)
+                i += 1
+        return "".join(result)
 
-        Returns a list of (prefix, replacement) tuples sorted by specificity
-        (longest prefix first). For example, {"@/*": ["./*"]} becomes
-        [("@/", "./")].
+    def _read_tsconfig_json(self, config_path: Path) -> dict:
+        """Read a tsconfig/jsconfig file, handling JSONC comments and trailing commas."""
+        text = config_path.read_text(encoding="utf-8")
+        text = self._strip_jsonc_comments(text)
+        text = re.sub(r",\s*([}\]])", r"\1", text)
+        return json.loads(text)
+
+    def _resolve_tsconfig_options(self, config_path: Path, depth: int = 0) -> tuple[dict, Path]:
+        """Parse tsconfig and follow extends to find compilerOptions with paths.
+
+        Returns (compilerOptions, directory_of_config_that_defines_paths).
         """
-        if self._tsconfig_aliases is not None:
-            return self._tsconfig_aliases
+        if depth > 5:
+            return {}, config_path.parent
 
-        self._tsconfig_aliases = []
+        config = self._read_tsconfig_json(config_path)
+        compiler_options = config.get("compilerOptions", {})
+
+        if "paths" in compiler_options:
+            return compiler_options, config_path.parent
+
+        extends = config.get("extends")
+        if extends:
+            if isinstance(extends, str):
+                extends = [extends]
+            for ext in extends if isinstance(extends, list) else []:
+                base_path = (config_path.parent / ext).resolve()
+                if not base_path.suffix:
+                    base_path = base_path.with_suffix(".json")
+                if base_path.exists():
+                    base_options, base_dir = self._resolve_tsconfig_options(base_path, depth + 1)
+                    if "paths" in base_options:
+                        if "baseUrl" in compiler_options:
+                            merged = {**base_options, "baseUrl": compiler_options["baseUrl"]}
+                            return merged, config_path.parent
+                        return base_options, base_dir
+
+        return compiler_options, config_path.parent
+
+    def _parse_tsconfig_paths(self, config_path: Path) -> list[tuple[str, str]]:
+        """Extract path aliases from a tsconfig, following extends if needed.
+
+        Returns list of (alias_prefix, resolved_dir) where resolved_dir
+        is relative to the repo root.
+        """
+        try:
+            compiler_options, source_dir = self._resolve_tsconfig_options(config_path)
+        except Exception as exc:
+            log.debug("Failed to parse %s: %s", config_path, exc)
+            return []
+
+        paths = compiler_options.get("paths", {})
+        if not paths:
+            return []
+
+        base_url = compiler_options.get("baseUrl", ".")
+        base_url_abs = (source_dir / base_url).resolve()
+        repo_root = self._repo_path.resolve() if self._repo_path else Path.cwd().resolve()
+        try:
+            base_url_rel = base_url_abs.relative_to(repo_root).as_posix()
+        except ValueError:
+            base_url_rel = "."
+        if base_url_rel == ".":
+            base_url_rel = ""
+
+        aliases: list[tuple[str, str]] = []
+        for pattern, targets in paths.items():
+            if not targets or not isinstance(targets, list):
+                continue
+            alias_prefix = pattern[:-1] if pattern.endswith("/*") else pattern
+            target = targets[0]
+            target_prefix = target[:-1] if target.endswith("/*") else target
+
+            resolved = posixpath.normpath(posixpath.join(base_url_rel, target_prefix)) if base_url_rel else target_prefix
+            while resolved.startswith("./"):
+                resolved = resolved[2:]
+            if resolved == ".":
+                resolved = ""
+            if resolved and not resolved.endswith("/"):
+                resolved += "/"
+
+            aliases.append((alias_prefix, resolved))
+
+        aliases.sort(key=lambda x: len(x[0]), reverse=True)
+        return aliases
+
+    def _discover_tsconfigs(self) -> dict[str, list[tuple[str, str]]]:
+        """Find all tsconfig.json/jsconfig.json and extract path aliases.
+
+        Returns a dict mapping directory (relative posix, "" for root) to alias list.
+        """
+        if self._tsconfig_map is not None:
+            return self._tsconfig_map
+
+        self._tsconfig_map = {}
         if not self._repo_path:
-            return self._tsconfig_aliases
+            return self._tsconfig_map
+
+        repo_root = self._repo_path.resolve()
+
+        if self._tsconfig_override:
+            override_path = (repo_root / self._tsconfig_override).resolve()
+            if override_path.exists():
+                aliases = self._parse_tsconfig_paths(override_path)
+                if aliases:
+                    self._tsconfig_map[""] = aliases
+                    log.info("Loaded %d aliases from --tsconfig %s", len(aliases), self._tsconfig_override)
+            return self._tsconfig_map
 
         for config_name in ("tsconfig.json", "jsconfig.json"):
-            config_path = self._repo_path / config_name
-            if not config_path.exists():
-                continue
-            try:
-                with open(config_path) as f:
-                    config = json.load(f)
-                paths = config.get("compilerOptions", {}).get("paths", {})
-                base_url = config.get("compilerOptions", {}).get("baseUrl", ".")
-                for pattern, targets in paths.items():
-                    if not targets or not isinstance(targets, list):
-                        continue
-                    if pattern.endswith("/*"):
-                        alias_prefix = pattern[:-1]
-                    else:
-                        alias_prefix = pattern
+            for config_path in repo_root.rglob(config_name):
+                rel = config_path.relative_to(repo_root)
+                if any(p in _SKIP_DIRS for p in rel.parent.parts):
+                    continue
+                rel_dir = rel.parent.as_posix()
+                if rel_dir == ".":
+                    rel_dir = ""
+                if config_name == "jsconfig.json" and rel_dir in self._tsconfig_map:
+                    continue
+                aliases = self._parse_tsconfig_paths(config_path)
+                if aliases:
+                    self._tsconfig_map[rel_dir] = aliases
 
-                    target = targets[0]
-                    if target.endswith("/*"):
-                        target_prefix = target[:-1]
-                    else:
-                        target_prefix = target
+        total = sum(len(v) for v in self._tsconfig_map.values())
+        log.info("Discovered %d tsconfigs with %d total aliases", len(self._tsconfig_map), total)
+        return self._tsconfig_map
 
-                    resolved = (Path(base_url) / target_prefix).as_posix()
-                    while resolved.startswith("./"):
-                        resolved = resolved[2:]
-                    if resolved == ".":
-                        resolved = ""
-                    if resolved and not resolved.endswith("/"):
-                        resolved = resolved + "/"
+    def _find_nearest_tsconfig(self, file_path: str) -> list[tuple[str, str]] | None:
+        """Find aliases from the nearest ancestor tsconfig for a file."""
+        tsconfig_map = self._discover_tsconfigs()
+        if not tsconfig_map:
+            return None
 
-                    self._tsconfig_aliases.append((alias_prefix, resolved))
+        dir_path = posixpath.dirname(file_path)
+        checked: set[str] = set()
+        while dir_path not in checked:
+            checked.add(dir_path)
+            if dir_path in tsconfig_map:
+                return tsconfig_map[dir_path]
+            dir_path = posixpath.dirname(dir_path)
 
-                self._tsconfig_aliases.sort(key=lambda x: len(x[0]), reverse=True)
-                log.info(
-                    "Loaded tsconfig path aliases: config=%s, aliases=%d",
-                    config_name,
-                    len(self._tsconfig_aliases),
-                )
-                break
-            except Exception as exc:
-                log.debug("Failed to load tsconfig aliases: %s", exc)
+        return None
 
-        return self._tsconfig_aliases
-
-    def _resolve_ts_alias(self, module_path: str, path_set: set[str]) -> str | None:
+    def _resolve_ts_alias(self, module_path: str, importer_path: str, path_set: set[str]) -> str | None:
         """Resolve a TypeScript path alias to an internal file."""
-        aliases = self._load_tsconfig_aliases()
+        aliases = self._find_nearest_tsconfig(importer_path)
+        if not aliases:
+            return None
+
         for alias_prefix, target_dir in aliases:
             if not module_path.startswith(alias_prefix):
                 continue
@@ -315,7 +443,7 @@ class GraphBuilder:
                 return None  # Relative import that can't resolve -- don't create external node
             else:
                 # Try tsconfig/jsconfig path alias resolution
-                alias_resolved = self._resolve_ts_alias(module_path, path_set)
+                alias_resolved = self._resolve_ts_alias(module_path, importer_path, path_set)
                 if alias_resolved:
                     return alias_resolved
                 # External npm package
