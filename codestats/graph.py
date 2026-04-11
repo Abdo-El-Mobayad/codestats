@@ -93,6 +93,7 @@ class GraphBuilder:
             has_error=bool(parsed.parse_errors),
             is_test=parsed.file_info.is_test,
             is_entry_point=parsed.file_info.is_entry_point,
+            content_hash=parsed.content_hash,
         )
 
     def build(self) -> nx.DiGraph:
@@ -122,6 +123,9 @@ class GraphBuilder:
                             imported_names=list(imp.imported_names),
                         )
 
+        # Add TESTED_BY reverse edges
+        self._add_tested_by_edges()
+
         self._built = True
         log.info(
             "Graph built: nodes=%d, edges=%d",
@@ -129,6 +133,27 @@ class GraphBuilder:
             self._graph.number_of_edges(),
         )
         return self._graph
+
+    def _add_tested_by_edges(self) -> None:
+        """For each test file that imports a production file, create a reverse TESTED_BY edge."""
+        tested_by_count = 0
+        for node, data in list(self._graph.nodes(data=True)):
+            if not data.get("is_test"):
+                continue
+            # This test file imports production files -- create reverse edges
+            for _, target, edge_data in list(self._graph.out_edges(node, data=True)):
+                target_data = self._graph.nodes.get(target, {})
+                if target_data and not target_data.get("is_test") and not str(target).startswith("external:"):
+                    # Add reverse edge: production -> test (TESTED_BY)
+                    if not self._graph.has_edge(target, node):
+                        self._graph.add_edge(
+                            target, node,
+                            edge_type="TESTED_BY",
+                            imported_names=edge_data.get("imported_names", []),
+                        )
+                        tested_by_count += 1
+        if tested_by_count:
+            log.info("Added %d TESTED_BY edges", tested_by_count)
 
     def graph(self) -> nx.DiGraph:
         """Return the graph (building it first if necessary)."""

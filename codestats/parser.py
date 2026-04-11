@@ -45,44 +45,45 @@ _PASSTHROUGH_LANGUAGES: frozenset[str] = frozenset(
 
 
 def _build_language_registry() -> dict[str, Language]:
-    """Lazily load installed tree-sitter language packages."""
+    """Build registry using tree-sitter-language-pack."""
+    from tree_sitter_language_pack import get_language
+
     registry: dict[str, Language] = {}
 
-    def _try_load(tag: str, loader: Callable[[], Language]) -> None:
+    # Map our language tags to language-pack names
+    _LANG_PACK_NAMES: dict[str, str] = {
+        "python": "python",
+        "typescript": "typescript",
+        "javascript": "javascript",
+        "go": "go",
+        "rust": "rust",
+        "java": "java",
+        "cpp": "cpp",
+        "c": "c",
+        "ruby": "ruby",
+        "kotlin": "kotlin",
+        "scala": "scala",
+        "csharp": "csharp",
+        "php": "php",
+        "swift": "swift",
+        "lua": "lua",
+        "r": "r",
+        "elixir": "elixir",
+        "haskell": "haskell",
+        "ocaml": "ocaml",
+    }
+
+    for our_tag, pack_name in _LANG_PACK_NAMES.items():
         try:
-            registry[tag] = loader()
+            registry[our_tag] = get_language(pack_name)
         except Exception as exc:
-            log.debug("tree-sitter language unavailable: %s (%s)", tag, exc)
+            log.debug("tree-sitter language unavailable: %s (%s)", our_tag, exc)
 
-    _try_load("python", lambda: Language(__import__("tree_sitter_python").language()))
-
-    def _ts() -> None:
-        import tree_sitter_typescript as ts
-
-        registry["typescript"] = Language(ts.language_typescript())
-        registry["tsx"] = Language(ts.language_tsx())
-
+    # TSX uses its own grammar (separate from typescript)
     try:
-        _ts()
+        registry["tsx"] = get_language("tsx")
     except Exception as exc:
-        log.debug("tree-sitter language unavailable: typescript (%s)", exc)
-
-    _try_load("javascript", lambda: Language(__import__("tree_sitter_javascript").language()))
-    _try_load("go", lambda: Language(__import__("tree_sitter_go").language()))
-    _try_load("rust", lambda: Language(__import__("tree_sitter_rust").language()))
-    _try_load("java", lambda: Language(__import__("tree_sitter_java").language()))
-
-    def _cpp() -> None:
-        import tree_sitter_cpp as ts_cpp
-
-        lang = Language(ts_cpp.language())
-        registry["cpp"] = lang
-        registry["c"] = lang
-
-    try:
-        _cpp()
-    except Exception as exc:
-        log.debug("tree-sitter language unavailable: cpp (%s)", exc)
+        log.debug("tree-sitter language unavailable: tsx (%s)", exc)
 
     return registry
 
@@ -90,10 +91,21 @@ def _build_language_registry() -> dict[str, Language]:
 _LANGUAGE_REGISTRY: dict[str, Language] = {}
 
 
-def _get_language(tag: str) -> Language | None:
+def _get_language(tag: str, file_path: str | None = None) -> Language | None:
+    """Look up a tree-sitter Language for *tag*.
+
+    If *file_path* ends with ``.tsx``, the ``"tsx"`` grammar is returned even
+    when *tag* is ``"typescript"`` (the extension-to-language map lumps both
+    under ``"typescript"``).
+    """
     global _LANGUAGE_REGISTRY
     if not _LANGUAGE_REGISTRY:
         _LANGUAGE_REGISTRY = _build_language_registry()
+
+    # .tsx files need the dedicated TSX grammar
+    if tag == "typescript" and file_path and file_path.endswith(".tsx"):
+        return _LANGUAGE_REGISTRY.get("tsx")
+
     return _LANGUAGE_REGISTRY.get(tag)
 
 
@@ -278,6 +290,34 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         parent_class_types=frozenset(),
         entry_point_patterns=["main.c"],
     ),
+    "ruby": LanguageConfig(
+        symbol_node_types={
+            "method": "function",
+            "singleton_method": "function",
+            "class": "class",
+            "module": "module",
+        },
+        import_node_types=["call"],
+        export_node_types=[],
+        visibility_fn=_public_by_default,
+        parent_extraction="nesting",
+        parent_class_types=frozenset({"class", "module"}),
+        entry_point_patterns=["main.rb", "app.rb", "config.ru"],
+    ),
+    "kotlin": LanguageConfig(
+        symbol_node_types={
+            "function_declaration": "function",
+            "class_declaration": "class",
+            "object_declaration": "class",
+            "interface_declaration": "interface",
+        },
+        import_node_types=["import_header"],
+        export_node_types=[],
+        visibility_fn=_java_visibility,
+        parent_extraction="nesting",
+        parent_class_types=frozenset({"class_declaration", "object_declaration"}),
+        entry_point_patterns=["Main.kt", "Application.kt"],
+    ),
 }
 
 
@@ -294,9 +334,21 @@ class ASTParser:
 
     def parse_file(self, file_info: FileInfo, source: bytes) -> ParsedFile:
         """Parse *source* bytes and return a fully populated ParsedFile."""
+        # Vue SFC: extract <script> blocks and re-parse
+        if file_info.language == "vue":
+            from .vue_parser import parse_vue_file
+
+            return parse_vue_file(file_info, source, self)
+
+        # Jupyter notebooks: extract code cells and re-parse
+        if file_info.path.endswith(".ipynb"):
+            from .notebook_parser import parse_notebook
+
+            return parse_notebook(file_info, source, self)
+
         lang = file_info.language
         config = LANGUAGE_CONFIGS.get(lang)
-        language = _get_language(lang)
+        language = _get_language(lang, file_info.path)
 
         if config is None or language is None:
             if config is not None and language is None:

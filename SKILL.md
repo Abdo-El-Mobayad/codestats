@@ -4,378 +4,344 @@
 
 ## Installation Check
 
-Before using any codestats command, verify it is installed:
-
 ```bash
 codestats --version
 ```
 
-If the command is not found, install it:
+If not found, install:
 
 ```bash
 pip install cf-codestats
 ```
 
-Or install from source:
-
-```bash
-pip install git+https://github.com/Abdo-El-Mobayad/codestats.git
-```
-
-Requires Python 3.10+ and git available on PATH.
-
-> **Note:** The PyPI package is `cf-codestats` (not `codestats`, which is an unrelated package). The CLI command is still `codestats`.
+Requires Python 3.10+ and git. The PyPI package is `cf-codestats` (not `codestats`). The CLI command is `codestats`.
 
 ## What CodeStats Does
 
-CodeStats builds a dependency graph of a codebase using tree-sitter parsing and git history analysis, then answers four questions:
+CodeStats builds a dependency graph from tree-sitter parsing and git history, then exposes 14 commands for codebase analysis. Everything runs locally, no API keys, no cloud.
 
-1. **Dead code detection** -- Find files that nothing imports. Useful for identifying cleanup opportunities and reducing maintenance burden. Framework-aware: Next.js pages, routes, layouts, and middleware are never flagged.
+**Core capabilities:**
 
-2. **Blast radius / risk analysis** -- For any given file, show how many other files depend on it (importers), what it depends on, its PageRank centrality score, git churn, hotspot status, and co-change partners. Essential before refactoring high-coupling files.
+- Incremental indexing (full build once, then only changed files)
+- Dead code detection with framework-aware filtering
+- Bidirectional impact analysis with risk scoring
+- Execution flow tracing with criticality scoring
+- Community detection (Louvain) with architecture coupling warnings
+- Circular dependency detection
+- Full-text symbol search (FTS5)
+- Interactive D3.js visualization
+- Refactoring tools (rename preview, move suggestions, large function finder)
+- Architecture wiki generation
 
-3. **Dependency path tracing** -- Find the shortest import chain between two files. Useful for understanding how changes propagate and why two seemingly unrelated files are coupled.
+## Workflows
 
-4. **Architecture diagrams** -- Generate Mermaid flowcharts of the dependency graph, ranked by centrality. Useful for onboarding, documentation, and identifying architectural patterns.
+### Workflow 1: First-Time Codebase Analysis
 
-## Concepts Explained
+Run this sequence to get a complete picture of a new codebase:
 
-### Internal vs External Edges
+```bash
+codestats init                          # Build the index (8-step pipeline)
+codestats status                        # Quick health overview
+codestats communities --coupling        # How is the code organized? Any tight coupling?
+codestats flows                         # What are the critical execution paths?
+codestats dead-code                     # What can be cleaned up?
+codestats diagram                       # Open interactive architecture visualization
+```
 
-An **internal edge** is an import between two files within the repository (e.g., `lib/sync/scheduler.ts` imports `lib/cache/invalidation.ts`). An **external edge** is an import of a third-party package (e.g., `import pg from 'pg'`). CodeStats tracks both but most commands focus on internal edges since those represent coupling within your control.
+### Workflow 2: Before Changing a File
 
-### PageRank Centrality
+Always check impact before modifying a file:
 
-PageRank measures which files are most "load-bearing" in the codebase. A file with high PageRank is imported by many files that are themselves highly imported. Think of it as recursive importance. A file like `lib/utils.ts` with 65 importers will have high PageRank. Changing a high-PageRank file carries more risk because breakage cascades further.
+```bash
+codestats risk <file>                   # Blast radius, centrality, test coverage, git stats
+codestats impact <file> --depth 3       # What else breaks? Risk-scored per impacted file
+```
 
-### Hotspot Scoring
+**Decision guide:**
 
-A **hotspot** is a file with high recent churn (many lines added/deleted in the last 90 days) combined with temporal decay weighting (recent commits matter more than old ones). Hotspots are files that are both important and actively changing -- the highest risk combination. The hotspot score ranges from 0.0 to 1.0.
+- Importer count > 20: make changes backward-compatible or add a new interface first
+- Risk level CRITICAL: get review, add tests for impacted files before changing
+- No test coverage shown: write tests before refactoring
 
-### Blast Radius
+### Workflow 3: Pre-Commit Review
 
-The **blast radius** of a file is the number of files that directly import it (its importer count). A file with 45 importers has a much larger blast radius than one with 2. When you change a file's exports, function signatures, or behavior, every importer is potentially affected. Always check blast radius before refactoring.
+Check what your uncommitted changes affect:
 
-### Dead Code
+```bash
+codestats init                          # Incremental re-index (picks up your changes)
+codestats impact --changed              # Auto-detects git changes, shows blast radius
+codestats dead-code                     # Did your changes create orphaned files?
+```
 
-A file is flagged as **dead code** when it has zero importers (nothing in the codebase imports it) and it is not a recognized entry point. Framework entry points (Next.js pages, routes, layouts, middleware), config files, test fixtures, migration files, and type declaration files are automatically excluded from dead code detection.
+### Workflow 4: Periodic Cleanup
 
-**Confidence scores** range from 0.0 to 1.0 based on factors like git activity (recently modified files get lower confidence since they may be works in progress) and file type.
+```bash
+codestats init                          # Re-index
+codestats dead-code --min-confidence 0.7  # High-confidence dead files
+codestats refactor large --threshold 50   # Functions that should be split
+codestats refactor moves                  # Files in the wrong module
+codestats cycles                          # Circular dependency chains to break
+```
 
-The **safe_to_delete** flag is true when the file has zero importers, no recent git activity, and is not a recognized entry point or config file.
+### Workflow 5: Architecture Documentation
+
+```bash
+codestats diagram                       # Interactive D3.js graph (opens in browser)
+codestats wiki --output docs/architecture  # Generate markdown wiki
+codestats communities                   # Module breakdown with cohesion scores
+codestats flows                         # Critical paths through the codebase
+```
+
+### Workflow 6: Investigating a Bug
+
+When a bug could originate from multiple files:
+
+```bash
+codestats search "auth"                 # Find all auth-related symbols
+codestats risk <suspect-file>           # Check its coupling and churn
+codestats deps <file-a> <file-b>        # How are these files connected?
+codestats flow <entry-point>            # Trace the execution path
+```
 
 ## Command Reference
 
 ### `codestats init [PATH]`
 
-Index the project. Must be run before any other command. Re-run to update the index after significant changes.
+8-step indexing pipeline. Incremental by default (only re-processes changed files after first build).
 
 ```bash
-# Index the current directory
-codestats init
-
-# Index a specific project
-codestats init /path/to/project
-
-# Verbose mode (shows per-file progress)
-codestats init --verbose
-
-# Monorepo: point to a specific tsconfig for alias resolution
-codestats init --tsconfig apps/web/tsconfig.json
+codestats init                    # Index current directory (incremental if DB exists)
+codestats init --force            # Force full rebuild
+codestats init --tsconfig apps/web/tsconfig.json  # Specify tsconfig for alias resolution
+codestats init --verbose          # Show per-file progress
 ```
 
-**What it does:** Traverses files (respecting .gitignore), parses each with tree-sitter to extract imports and symbols (including `import`, `require()`, dynamic `import()`, and `export ... from` re-exports), auto-discovers all `tsconfig.json` files for path alias resolution (monorepo-aware, follows `extends` chains, handles JSONC comments), builds a NetworkX dependency graph, mines git history for churn and hotspots, runs dead code detection, and saves everything to `~/.codestats/projects/<repo>/graph.db`.
+**Pipeline steps:** file traversal, tree-sitter parsing, graph construction, git analytics, community detection, flow tracing, search indexing, dead code detection.
 
-**Typical timing:** ~3 minutes for a 400-file codebase. The majority of time is spent on git log analysis.
-
-**When to run:**
-
-- First time using codestats on a project
-- After major refactoring, file renames, or dependency changes
-- Periodically (weekly or before important refactoring decisions)
+**Timing:** Full build ~27s for 600 files. Incremental <2s for 1-5 changed files. Git analytics dominates full build time.
 
 ### `codestats dead-code [PATH]`
 
-List files with zero importers that are not framework entry points.
+Files with zero importers, excluding framework entry points.
 
 ```bash
-# Show all dead code findings
-codestats dead-code
-
-# JSON output for scripting
-codestats dead-code --json
-
-# Only high-confidence findings
-codestats dead-code --min-confidence 0.7
+codestats dead-code                     # Standard report
+codestats dead-code --min-confidence 0.7  # High-confidence only
+codestats dead-code --include-moves     # Also show misplaced file suggestions
+codestats dead-code --json              # Machine-readable output
 ```
 
-**Example output:**
+**Kinds:** `unreachable_file` (zero importers), `zombie_package` (unused monorepo package), `misplaced_file` (structurally misplaced, with `--include-moves`).
 
-```
-Dead code findings: 71
-
-File                                                         Kind                  Conf Safe?
------------------------------------------------------------------------------------------------
-components/ui/collapsible.tsx                                unreachable_file      0.85   Yes
-lib/stores/dashboard-store.ts                                unreachable_file      0.80   Yes
-```
-
-**How to interpret:**
-
-- **Kind**: `unreachable_file` means no file imports it. `unused_export` means specific exported symbols are never imported. `zombie_package` means an npm package is in package.json but never imported.
-- **Conf**: Confidence from 0.0-1.0. Higher means more likely truly dead.
-- **Safe?**: "Yes" means it is safe to delete based on zero importers and no recent activity.
-
-**When to use:**
-
-- Periodic codebase cleanup
-- Before a major release to reduce bundle size
-- When onboarding to understand what is and is not actively used
+**Confidence:** 1.0 = old file, no recent commits. 0.7 = no 90-day activity. 0.4 = recently active but still unreachable.
 
 ### `codestats risk FILE [PATH]`
 
-Show blast radius, centrality metrics, git analytics, and co-change partners for a specific file.
+Blast radius, centrality, git stats, test coverage, and co-change partners for one file.
 
 ```bash
-# Check risk for a specific file
-codestats risk lib/db/registry.ts
-
-# JSON output
-codestats risk lib/db/registry.ts --json
+codestats risk src/api/auth.py
+codestats risk src/api/auth.py --json
 ```
 
-**Example output:**
+**Output includes:** language, symbol count, entry point status, PageRank, betweenness centrality, importer list, dependency list, test coverage (TESTED_BY edges), git analytics (commits, churn, hotspot score, bus factor, primary owner), co-change partners.
 
-```
-Risk Analysis: lib/db/registry.ts
+### `codestats impact FILE... [--path PATH]`
 
-  Language:       typescript
-  Symbols:        12
-  Entry Point:    No
-  PageRank:       0.008432
-  Betweenness:    0.045210
+Bidirectional BFS impact analysis. Walks both forward (what this file depends on) and backward (what depends on this file).
 
-  Importers (45):
-    <- lib/sync/airtable.ts
-    <- lib/sync/scheduler.ts
-    <- lib/sync/exchange-rates.ts
-    ... and 42 more
-
-  Dependencies (3):
-    -> lib/helpers/url-helpers.ts
-
-  Git Analytics:
-    Commits (total):  18
-    Commits (90d):    5
-    Hotspot:          Yes (score: 0.72)
-    Primary owner:    Abdo
-    Bus factor:       1
+```bash
+codestats impact src/api/auth.py                    # Single file
+codestats impact src/api/auth.py src/api/routes.py  # Multiple files
+codestats impact --changed                          # Auto-detect from git diff
+codestats impact src/api/auth.py --depth 5          # Deeper traversal (default: 3)
+codestats impact --changed --json                   # Machine-readable
 ```
 
-**How to interpret:**
+**Risk scoring (per impacted file):** 7-factor additive model -- caller count, no test coverage (heaviest: 0.30), community crossing, hotspot status, low bus factor, high centrality, security-sensitive name.
 
-- **Importers (N)**: N files directly import this file. This is the blast radius. 45 importers = high risk to change.
-- **PageRank**: Higher = more central to the codebase. Files above 0.005 are significant.
-- **Betweenness**: Higher = this file sits on more shortest paths between other files. It is a bottleneck.
-- **Hotspot score**: 0.0-1.0. Above 0.5 means actively churning. Combined with high importer count, this is the riskiest pattern.
-- **Bus factor**: Number of unique committers. 1 = single point of failure for knowledge.
+**Risk levels:** LOW (<0.3), MEDIUM (0.3-0.5), HIGH (0.5-0.7), CRITICAL (>0.7).
 
-**When to use:**
+### `codestats communities [PATH]`
 
-- Before refactoring any file -- understand what depends on it
-- When deciding whether to split a large file
-- When assessing risk of a proposed change
+Louvain community detection. Groups files into logical modules.
+
+```bash
+codestats communities                   # List all communities
+codestats communities --coupling        # Also show architecture coupling warnings
+codestats communities --json
+```
+
+**Cohesion:** internal_edges / (internal + external). Higher = more self-contained module.
+
+**Coupling warnings:** Community pairs with >10 cross-edges = "high coupling", >5 = "moderate".
+
+### `codestats cycles [PATH]`
+
+Detect circular dependency chains (strongly connected components).
+
+```bash
+codestats cycles                        # All cycles (default min-size: 2)
+codestats cycles --min-size 3           # Only larger cycles
+codestats cycles --json
+```
+
+### `codestats flows [PATH]`
+
+Execution flows traced from entry points through the import graph, sorted by criticality.
+
+```bash
+codestats flows                         # List all flows
+codestats flows --json
+```
+
+**Criticality (0.0-1.0):** Weighted by file spread (0.30), external calls (0.20), security-sensitive names (0.25), test coverage gap (0.15), BFS depth (0.10).
+
+### `codestats flow ENTRY [PATH]`
+
+Detailed view of a single execution flow. Accepts entry point path or flow ID (substring match).
+
+```bash
+codestats flow src/api/routes.py
+codestats flow a1b2c3d4                 # By flow ID prefix
+codestats flow src/api/routes.py --json
+```
+
+### `codestats search QUERY [PATH]`
+
+FTS5 full-text search across all indexed symbols (functions, classes, methods, interfaces).
+
+```bash
+codestats search "parse"                # Search all symbols
+codestats search "parse" --kind function  # Filter by kind
+codestats search "Auth" --limit 5       # Limit results
+codestats search "parse" --json
+```
+
+**Smart boosting:** PascalCase queries boost class/interface results. snake_case queries boost function results.
 
 ### `codestats deps FROM TO [PATH]`
 
-Find the shortest import chain between two files using BFS.
+Shortest import path between two files (BFS).
 
 ```bash
-# Find how scheduler.ts reaches invalidation.ts
-codestats deps lib/sync/scheduler.ts lib/cache/invalidation.ts
-
-# JSON output
-codestats deps lib/sync/scheduler.ts lib/cache/invalidation.ts --json
+codestats deps src/api/auth.py src/db/models.py
+codestats deps src/api/auth.py src/db/models.py --json
 ```
-
-**Example output:**
-
-```
-Dependency path (1 hops):
-
-  lib/sync/scheduler.ts
-  -> lib/cache/invalidation.ts
-```
-
-**How to interpret:**
-
-- The path shows the import chain from source to target.
-- Fewer hops = tighter coupling. 1 hop means direct import.
-- If no path is found, the files are in disconnected parts of the graph.
-
-**When to use:**
-
-- Understanding why a change in file A broke file B
-- Investigating coupling between modules
-- Planning how to decouple two subsystems
 
 ### `codestats diagram [PATH]`
 
-Generate a Mermaid flowchart of the dependency graph. Output goes to stdout.
+Architecture visualization. Default: interactive D3.js HTML opened in browser.
 
 ```bash
-# Generate diagram of top 100 files
-codestats diagram
-
-# Smaller diagram (top 20 most central files)
-codestats diagram --max-nodes 20
-
-# Save to file
-codestats diagram > architecture.mmd
-
-# JSON output (nodes + edges arrays)
-codestats diagram --json
+codestats diagram                       # D3.js interactive (opens browser)
+codestats diagram --format mermaid      # Mermaid flowchart to stdout
+codestats diagram --max-nodes 30        # Limit node count
+codestats diagram --output arch.html    # Custom output path
+codestats diagram --json                # Raw nodes + edges
 ```
 
-**Example output:**
+**D3.js features:** Dark theme, force-directed layout, community coloring toggle, edge type styling (solid=imports, dashed=tested_by), search bar, click-to-inspect detail panel, zoom/pan.
 
-```mermaid
-flowchart LR
-    n0["lib/utils.ts"]
-    n1["lib/db/registry.ts"]
-    n2["lib/cache/invalidation.ts"]
-    n0 --> n2
-    n1 --> n2
+### `codestats refactor {large|moves|rename}`
+
+Refactoring analysis tools.
+
+```bash
+codestats refactor large                  # Functions over 50 lines
+codestats refactor large --threshold 30   # Custom threshold
+codestats refactor moves                  # Files in the wrong community
+codestats refactor rename old_name new_name  # Preview rename impact
+codestats refactor large --json           # All support --json
 ```
 
-**When to use:**
+### `codestats wiki [PATH]`
 
-- Generating architecture documentation
-- Onboarding new team members
-- Visualizing module boundaries
+Generate markdown architecture wiki from community structure and flow data.
+
+```bash
+codestats wiki                            # Output to .codestats/wiki/
+codestats wiki --output docs/architecture # Custom output directory
+codestats wiki --json                     # List generated files
+```
+
+**Generates:** `index.md` (overview + community table), per-community pages (members, key files), `flows.md` (execution flow table).
 
 ### `codestats status [PATH]`
 
-Show a summary of the last index.
+Summary of last index.
 
 ```bash
 codestats status
 codestats status --json
 ```
 
-**Example output:**
+## Key Concepts
 
-```
-CodeStats Status: quill
+### Incremental Indexing
 
-  Repository:     D:\Github\quill
-  Indexed at:     2026-04-08T03:32:00
-  Files:          400
-  Internal edges: 1033
-  Hotspots:       99
-  Dead code:      71
-  Database:       C:\Users\You\.codestats\projects\quill\graph.db (392.0 KB)
-```
+After the first full build, `codestats init` auto-detects changed files via git diff and content hash comparison. Only changed files + their dependents (up to 2 hops on the import graph) are re-processed. Git analytics runs only on changed files, merging with cached metadata for unchanged files.
 
-**When to use:**
+### TESTED_BY Edges
 
-- Checking when the index was last updated
-- Quick health overview of codebase complexity
+When a test file imports a production file, CodeStats creates a reverse TESTED_BY edge from production to test. This enables:
 
-## Best Practices
+- `risk` command showing which tests cover a file
+- Impact analysis factoring test coverage into risk scores
+- Flow tracing identifying untested critical paths
 
-### Before Refactoring a File
+### Risk Scoring Model
 
-Always check blast radius first:
+Impact analysis scores each impacted file on 7 additive factors (capped at 1.0):
 
-```bash
-codestats risk <file-to-refactor>
-```
+| Factor               | Max Weight | Trigger                                |
+| -------------------- | ---------- | -------------------------------------- |
+| No test coverage     | 0.30       | No TESTED_BY edges                     |
+| Community crossing   | 0.15       | Callers from different communities     |
+| Hotspot (high churn) | 0.15       | is_hotspot flag from git analytics     |
+| Caller count         | 0.10       | in_degree / 20                         |
+| Low bus factor       | 0.10       | bus_factor <= 1                        |
+| High centrality      | 0.10       | PageRank in top 10%                    |
+| Security sensitivity | 0.10       | Name contains auth/token/password/etc. |
 
-If the importer count is high (>20), consider:
+### Criticality Scoring
 
-- Making changes backward-compatible
-- Adding a new interface alongside the old one, migrating consumers, then removing the old one
-- Breaking the file into smaller, more focused modules
+Flow criticality scores each execution path on 5 weighted factors:
 
-### Periodic Cleanup
+| Factor               | Weight | Normalization                |
+| -------------------- | ------ | ---------------------------- |
+| File spread          | 0.30   | 0 at 1 file, 1.0 at 5+       |
+| Security sensitivity | 0.25   | keyword hits / node count    |
+| External calls       | 0.20   | 0 at 0 external, 1.0 at 5+   |
+| Test coverage gap    | 0.15   | 1.0 - (tested nodes / total) |
+| BFS depth            | 0.10   | depth / 10, capped at 1.0    |
 
-Run dead code detection regularly to find files that can be safely removed:
+### Community Detection
 
-```bash
-codestats dead-code --min-confidence 0.7
-```
+Louvain algorithm on the undirected import graph. Cohesion = internal_edges / (internal + external). Architecture coupling = cross-community edge count between pairs.
 
-Focus on high-confidence findings first. Review lower-confidence findings manually -- they may be dynamically loaded or used via reflection.
+## Storage
 
-### After Major Changes
+All data stored at `~/.codestats/projects/<repo-name>/graph.db` (SQLite). Tables: `meta`, `graph_nodes`, `graph_edges`, `git_metadata`, `dead_code`, `flows`, `flow_members`, `communities`, `community_members`, `symbols_fts`, `refactor_previews`.
 
-Re-index after significant refactoring, file renames, or dependency changes:
+No files are written to the project directory.
 
-```bash
-codestats init
-```
+## Supported Languages
 
-The index does not auto-update. If results seem stale or unexpected, re-indexing is the fix.
+**Full AST parsing (19+):** TypeScript, JavaScript, TSX, JSX, Python, Go, Rust, Java, C, C++, Ruby, Kotlin, Scala, C#, PHP, Swift, Lua, R, Elixir, Haskell, OCaml
 
-### Investigating Coupling
+**Special files:** Vue SFCs (`.vue`), Jupyter Notebooks (`.ipynb`)
 
-When two modules seem too tightly coupled, trace the dependency path:
-
-```bash
-codestats deps <module-a-file> <module-b-file>
-```
-
-If the path is short (1-2 hops) and involves many files, consider introducing an interface or event system to decouple them.
-
-### Architecture Reviews
-
-Generate a diagram before architecture discussions:
-
-```bash
-codestats diagram --max-nodes 30 > architecture.mmd
-```
-
-The Mermaid output can be pasted into GitHub markdown, rendered with the Mermaid CLI, or viewed in any Mermaid-compatible viewer.
-
-## How Storage Works
-
-All data is stored globally at:
-
-```
-~/.codestats/
-  projects/
-    <repo-name>/
-      graph.db          # SQLite database with graph, git metadata, dead code findings
-```
-
-The repo name is auto-detected from the git remote URL (`origin`). If no remote is configured, the directory name is used. No files are written to the project directory.
-
-The SQLite database contains four tables:
-
-- `graph_nodes` -- file paths with language, symbol count, PageRank, betweenness
-- `graph_edges` -- import relationships between files
-- `git_metadata` -- commit counts, churn, hotspot scores, ownership per file
-- `dead_code` -- dead code findings with confidence and safety flags
-
-Database size is typically small (under 1 MB for a 400-file project).
+**Traversed but not parsed:** YAML, JSON, TOML, Markdown, SQL, Shell, Terraform, Proto, GraphQL, Dockerfile, Makefile
 
 ## Troubleshooting
 
-**Results seem stale or wrong:** Re-index with `codestats init`. The database is not updated automatically when files change.
+**Results seem stale:** Run `codestats init` to re-index. Incremental mode is fast.
 
-**"Project not indexed yet" error:** Run `codestats init` from the project directory first.
+**"Project not indexed yet":** Run `codestats init` first.
 
-**"Not a git repository" error:** CodeStats requires a git repository. Ensure the directory has been initialized with `git init` and has at least one commit.
+**Monorepo aliases not resolving:** CodeStats auto-discovers all tsconfig.json files. If aliases still fail, use `--tsconfig apps/web/tsconfig.json`.
 
-**File not found in index:** The file path must match exactly as stored (forward slashes, relative to repo root). Run `codestats status --json` to verify the index exists, then check the file path.
+**Slow full build:** Git analytics dominates. Incremental mode avoids this after the first build.
 
-**Next.js pages showing as dead code:** This should not happen -- Next.js entry points are automatically excluded. If it does, re-index with `codestats init`. If the issue persists, the file may not match the expected patterns (e.g., it is outside the `app/` or `pages/` directory).
-
-**Slow indexing:** The git analytics step is the slowest part, as it runs `git log` per file. On a 400-file codebase, expect about 3 minutes total. Larger codebases will take proportionally longer.
-
-**Missing language support:** CodeStats supports TypeScript, JavaScript, Python, Go, Rust, Java, C, C++, Kotlin, and Ruby. Files in other languages are traversed but not parsed for imports.
-
-**Monorepo path aliases not resolving:** CodeStats v0.3.0+ auto-discovers all `tsconfig.json` files in the repo. If aliases still fail, use `--tsconfig` to point to the specific config: `codestats init --tsconfig apps/web/tsconfig.json`. The config's `extends` chain is followed automatically.
-
-**Wrong file resolved for common names:** When multiple files share the same name (e.g., two `helpers.ts`), CodeStats picks the one closest in the directory tree to the importing file. If resolution is wrong, check that the correct tsconfig paths are configured.
+**Want to start fresh:** Use `codestats init --force` for a full rebuild.

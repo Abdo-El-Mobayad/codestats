@@ -136,6 +136,7 @@ _SKIP_GENERATED_CHECK: frozenset[str] = frozenset(
         "graphql",
         "dockerfile",
         "makefile",
+        "vue",
     }
 )
 

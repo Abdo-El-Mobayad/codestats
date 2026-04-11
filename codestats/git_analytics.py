@@ -174,6 +174,62 @@ class GitAnalyzer:
         )
         return summary, results
 
+    def analyze_files(
+        self,
+        file_paths: list[str],
+        on_progress: Any = None,
+    ) -> tuple[GitAnalyticsSummary, list[dict]]:
+        """Analyze only the specified files. Used for incremental indexing."""
+        start = time.monotonic()
+        repo = self._get_repo()
+        if repo is None:
+            return GitAnalyticsSummary(0, 0, 0, 0.0), []
+
+        indexable_files = [fp for fp in file_paths if not _should_skip_index(fp)]
+
+        if not indexable_files:
+            return GitAnalyticsSummary(0, 0, 0, 0.0), []
+
+        log.info("Git analytics (incremental): indexing %d code files", len(indexable_files))
+
+        results: list[dict] = []
+        for i, file_path in enumerate(indexable_files):
+            meta = self._index_file(file_path, repo)
+            results.append(meta)
+            if on_progress and (i + 1) % 50 == 0:
+                on_progress(i + 1, len(indexable_files))
+
+        # Compute co-changes for the subset
+        tracked_files = self._get_tracked_files(repo)
+        co_changes = self._compute_co_changes(
+            repo, set(tracked_files), self.commit_limit
+        )
+        for meta in results:
+            fp = meta["file_path"]
+            if fp in co_changes:
+                meta["co_change_partners_json"] = json.dumps(co_changes[fp])
+
+        # Compute percentiles within this subset
+        self._compute_percentiles(results)
+
+        duration = time.monotonic() - start
+        hotspots = sum(1 for m in results if m.get("is_hotspot", False))
+        stable = sum(1 for m in results if m.get("is_stable", False))
+
+        repo.close()
+
+        summary = GitAnalyticsSummary(
+            files_indexed=len(results),
+            hotspots=hotspots,
+            stable_files=stable,
+            duration_seconds=duration,
+        )
+        log.info(
+            "Git analytics (incremental) complete: files=%d, hotspots=%d, duration=%.1fs",
+            summary.files_indexed, summary.hotspots, summary.duration_seconds,
+        )
+        return summary, results
+
     # ------------------------------------------------------------------
     # Internal methods
     # ------------------------------------------------------------------

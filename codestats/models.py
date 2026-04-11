@@ -10,7 +10,17 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import StrEnum
 from typing import Literal
+
+# ---------------------------------------------------------------------------
+# Edge type constants
+# ---------------------------------------------------------------------------
+
+EDGE_IMPORTS_FROM = "IMPORTS_FROM"
+EDGE_TESTED_BY = "TESTED_BY"
+EDGE_CALLS = "CALLS"
+EDGE_CONTAINS = "CONTAINS"
 
 # ---------------------------------------------------------------------------
 # Language tags
@@ -31,6 +41,11 @@ LanguageTag = Literal[
     "swift",
     "kotlin",
     "scala",
+    "lua",
+    "r",
+    "elixir",
+    "haskell",
+    "ocaml",
     "shell",
     "yaml",
     "json",
@@ -42,6 +57,7 @@ LanguageTag = Literal[
     "makefile",
     "markdown",
     "sql",
+    "vue",
     "openapi",
     "unknown",
 ]
@@ -74,6 +90,14 @@ EXTENSION_TO_LANGUAGE: dict[str, LanguageTag] = {
     ".swift": "swift",
     ".kt": "kotlin",
     ".scala": "scala",
+    ".lua": "lua",
+    ".r": "r",
+    ".R": "r",
+    ".ex": "elixir",
+    ".exs": "elixir",
+    ".hs": "haskell",
+    ".ml": "ocaml",
+    ".mli": "ocaml",
     ".sh": "shell",
     ".bash": "shell",
     ".zsh": "shell",
@@ -89,6 +113,8 @@ EXTENSION_TO_LANGUAGE: dict[str, LanguageTag] = {
     ".md": "markdown",
     ".mdx": "markdown",
     ".sql": "sql",
+    ".vue": "vue",
+    ".ipynb": "python",
 }
 
 SPECIAL_FILENAMES: dict[str, LanguageTag] = {
@@ -185,3 +211,63 @@ class ParsedFile:
 def compute_content_hash(source: bytes) -> str:
     """Return the SHA-256 hex digest of *source*."""
     return hashlib.sha256(source).hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# Dead code kind enum (used by dead_code.py, extended here for new kinds)
+# ---------------------------------------------------------------------------
+
+class DeadCodeKind(StrEnum):
+    UNREACHABLE_FILE = "unreachable_file"
+    UNUSED_EXPORT = "unused_export"
+    ZOMBIE_PACKAGE = "zombie_package"
+    MISPLACED_FILE = "misplaced_file"
+
+
+# ---------------------------------------------------------------------------
+# v0.4 dataclasses
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class Flow:
+    """An execution flow traced from an entry point through call chains."""
+    flow_id: str
+    entry_point: str
+    members: list[str]  # qualified names in BFS order
+    node_count: int
+    file_spread: int  # unique files touched
+    criticality: float  # 0.0-1.0
+    has_test_coverage: bool
+
+
+@dataclass
+class Community:
+    """A Louvain community cluster."""
+    community_id: int
+    name: str
+    members: list[str]  # file paths
+    member_count: int
+    cohesion: float  # internal / (internal + external) edges
+    top_files: list[str]
+
+
+@dataclass
+class ImpactResult:
+    """Result of bidirectional impact analysis on changed files."""
+    changed_files: list[str]
+    impacted_files: list[dict]  # [{path, risk_score, depth, reason}]
+    total_impacted: int
+    max_risk: float
+    risk_level: str  # LOW/MEDIUM/HIGH/CRITICAL
+
+
+@dataclass
+class RefactorPreview:
+    """A preview of a rename or move refactoring operation."""
+    preview_id: str
+    target_name: str
+    new_name: str | None
+    edits: list[dict]  # [{file, line, old_text, new_text}]
+    kind: str  # 'rename' or 'move'
+    created_at: datetime

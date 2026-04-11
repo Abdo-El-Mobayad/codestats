@@ -35,3 +35,6 @@ htmlcov/
 
 # codestats data (global storage is at ~/.codestats/)
 .codestats/
+
+# Claude Code tasks
+.claude/tasks/

@@ -23,6 +23,7 @@ class DeadCodeKind(StrEnum):
     UNREACHABLE_FILE = "unreachable_file"
     UNUSED_EXPORT = "unused_export"
     ZOMBIE_PACKAGE = "zombie_package"
+    MISPLACED_FILE = "misplaced_file"
 
 
 @dataclass
@@ -292,6 +293,80 @@ class DeadCodeAnalyzer:
                         age_days=None,
                     )
                 )
+
+        return findings
+
+    def suggest_moves(self, communities: dict[str, int]) -> list[DeadCodeFinding]:
+        """For files with low in-degree (1-2 importers), suggest moving them
+        closer to their consumers if all importers are in a different community.
+
+        This is a softer signal than unreachable (in_degree=0) -- the file IS used,
+        but only by one module, suggesting it's misplaced.
+
+        Kind: 'misplaced_file'
+        Confidence: 0.3 (advisory only)
+        """
+        findings: list[DeadCodeFinding] = []
+
+        for node in self.graph.nodes():
+            if str(node).startswith("external:"):
+                continue
+
+            node_data = self.graph.nodes[node]
+            if node_data.get("language", "unknown") in _NON_CODE_LANGUAGES:
+                continue
+            if node_data.get("is_test", False):
+                continue
+            if node_data.get("is_entry_point", False):
+                continue
+
+            node_community = communities.get(node)
+            if node_community is None:
+                continue
+
+            # Get IMPORTS_FROM predecessors only
+            importers = []
+            for pred in self.graph.predecessors(node):
+                if str(pred).startswith("external:"):
+                    continue
+                edge_data = self.graph.get_edge_data(pred, node)
+                if edge_data and edge_data.get("edge_type", "IMPORTS_FROM") == "IMPORTS_FROM":
+                    importers.append(pred)
+
+            # Only consider files with 1-2 importers
+            if len(importers) < 1 or len(importers) > 2:
+                continue
+
+            # Check if ALL importers are in a single different community
+            importer_communities = set()
+            for imp in importers:
+                ic = communities.get(imp)
+                if ic is not None:
+                    importer_communities.add(ic)
+
+            if len(importer_communities) == 1:
+                suggested = importer_communities.pop()
+                if suggested != node_community:
+                    git_meta = self.git_meta_map.get(node, {})
+                    findings.append(
+                        DeadCodeFinding(
+                            kind=DeadCodeKind.MISPLACED_FILE,
+                            file_path=node,
+                            symbol_name=None,
+                            confidence=0.3,
+                            reason=(
+                                f"All {len(importers)} importer(s) are in community {suggested}, "
+                                f"but file is in community {node_community}. Consider moving."
+                            ),
+                            last_commit_at=git_meta.get("last_commit_at") if isinstance(
+                                git_meta.get("last_commit_at"), datetime) else None,
+                            commit_count_90d=git_meta.get("commit_count_90d", 0),
+                            importers=len(importers),
+                            safe_to_delete=False,
+                            primary_owner=git_meta.get("primary_owner_name"),
+                            age_days=git_meta.get("age_days"),
+                        )
+                    )
 
         return findings
 
