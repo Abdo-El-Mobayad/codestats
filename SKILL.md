@@ -14,7 +14,13 @@ If not found, install:
 pip install cf-codestats
 ```
 
-Requires Python 3.10+ and git. The PyPI package is `cf-codestats` (not `codestats`). The CLI command is `codestats`.
+If pip can't resolve the package (mirror lag, restricted index, offline), install directly from the source repo:
+
+```bash
+pip install git+https://github.com/Abdo-El-Mobayad/codestats.git
+```
+
+Requires Python 3.10+ and git. The PyPI package is `cf-codestats` (not `codestats`). The CLI command is `codestats`. Source: https://github.com/Abdo-El-Mobayad/codestats
 
 ## What CodeStats Does
 
